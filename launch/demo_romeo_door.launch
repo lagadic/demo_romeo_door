@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+
+  <node name="demo_romeo_door" pkg="demo_romeo_door" type="demo_romeo_door" output="screen">
+<!--       <param name="TFdataFile" value= "$(find visp_naoqi_ros)/data/transformations.xml" /> -->
+
+  </node>
+
+
+</launch>
