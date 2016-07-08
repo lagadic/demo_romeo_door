@@ -26,7 +26,6 @@ DemoRomeoDoor::DemoRomeoDoor(ros::NodeHandle &nh)
   n.param("Port", port, 9559);
 
   pbvs_active.data = 0;
-
   pbvs_finished = 0;
 
   ROS_INFO("Launch DemoRomeoDoor node");
@@ -49,6 +48,7 @@ DemoRomeoDoor::~DemoRomeoDoor(){
 //    romeo = NULL;
 //  }
   romeo.stop(jointNames_tot);
+  ROS_INFO("DemoRomeoDoor normally destroyed !");
 }
 
 
@@ -109,15 +109,14 @@ void DemoRomeoDoor::spin()
         state = MoveRightArm;
         ROS_INFO("Head is in zero position");
       }
-      else
-        std::cout << "error = " << error << "  status door handle : " << status_door_handle << std::endl;
+//      else
+//        std::cout << "error = " << error << "  status door handle : " << status_door_handle << std::endl;
     }
     if (state == MoveRightArm)
     {
       moveRArmFromRestPosition(); // move up
       ROS_INFO("Right Arm should go in zero position");
       state = VisualServoRHand;
-//      ros::shutdown();
     }
     if (state == VisualServoRHand)
     {
@@ -151,7 +150,7 @@ void DemoRomeoDoor::spin()
     {
       // Open loop upward motion of the hand
       vpColVector cart_delta_pos(6, 0);
-      cart_delta_pos[1] = -0.03;
+      cart_delta_pos[1] = -0.02;
       cart_delta_pos[3] = vpMath::rad(-90);
       double delta_t = 3;
 
@@ -160,7 +159,7 @@ void DemoRomeoDoor::spin()
       vpVelocityTwistMatrix V;
       if (moveCartesian.computeVelocity(romeo, cart_delta_pos, delta_t, "RArm", V)) {
         romeo.setVelocity(moveCartesian.getJointNames(), moveCartesian.getJointVelocity());
-        ROS_INFO("Right Arm should go in openLoop to open the door");
+//        ROS_INFO("Right Arm should go in openLoop to open the door");
       }
       else
       {
@@ -175,7 +174,7 @@ void DemoRomeoDoor::spin()
       vpColVector cart_delta_pos(6, 0);
       cart_delta_pos[5] = vpMath::rad(-20);
       cart_delta_pos[0] = 0.04;
-      cart_delta_pos[1] = 0.072;
+      cart_delta_pos[1] = 0.065;
       double delta_t = 3;
 
 
@@ -183,7 +182,7 @@ void DemoRomeoDoor::spin()
       vpVelocityTwistMatrix V;
       if (moveCartesian.computeVelocity(romeo, cart_delta_pos, delta_t, "RArm", V)) {
         romeo.setVelocity(moveCartesian.getJointNames(), moveCartesian.getJointVelocity());
-        ROS_INFO("Right Arm should go in openLoop to open the door");
+//        ROS_INFO("Right Arm should go in openLoop to open the door");
       }
       else
       {
@@ -229,19 +228,36 @@ void DemoRomeoDoor::spin()
       else
       {
         romeo.stop(jointNames_tot);
-        state = WaitDoorOpening;
+        state = ReleaseDoorHandle;
         ROS_INFO("Right Arm should have opened the door");
       }
     }
+    if (state == ReleaseDoorHandle)
+    {
+      romeo.getProxy()->setStiffnesses("RHand", 1.0f);
+      AL::ALValue angle = 1.00;
+      romeo.getProxy()->setAngles("RHand", angle, 0.15);
+      state = GoBacktoResPosition;
+      ROS_INFO("Right Arm should have released the handle");
+    }
+    if (state == GoBacktoResPosition)
+    {
+      moveRArmToRestPosition(); // move up
+      ROS_INFO("Right Arm should go back in rest position");
+      state = WaitDoorOpening;
+    }
     if (state == WaitDoorOpening)
     {
+      state_door_handle_sub.shutdown();
+      state_hand_sub.shutdown();
+      pbvs_finished_sub.shutdown();
       break;
     }
 
     ros::spinOnce();
     loop_rate.sleep();
   }
-  ROS_INFO("Shutdown fait n'importe quoi ?");
+  ROS_INFO("End of spin");
 //  ros::shutdown();
 }
 
@@ -269,6 +285,50 @@ void DemoRomeoDoor::moveRArmFromRestPosition ()
     AL::ALValue pos1 = AL::ALValue::array(0.3741794228553772, -0.33311545848846436, -0.036883752793073654, 1.260278582572937, 0.4322237968444824, 0.009434251114726067);
     AL::ALValue pos2 = AL::ALValue::array(0.39718443155288696, -0.282814621925354, 0.17343932390213013, 1.194741129875183, -0.5093367099761963, 0.18652880191802979);
     AL::ALValue pos3 = AL::ALValue::array(0.35522401332855225, -0.1643453985452652, 0.13889043033123016, 1.400763988494873, -0.566399872303009, 0.49108603596687317);
+
+    AL::ALValue time1 = 1.5f;
+    AL::ALValue time2 = 3.0f;
+    AL::ALValue time3 = 5.0f;
+
+
+
+    AL::ALValue path;
+    path.arrayPush(pos1);
+    path.arrayPush(pos2);
+    path.arrayPush(pos3);
+
+
+    AL::ALValue times;
+    times.arrayPush(time1);
+    times.arrayPush(time2);
+    times.arrayPush(time3);
+
+    AL::ALValue chainName  = AL::ALValue::array ("RArm");
+    AL::ALValue space      = AL::ALValue::array (0); // Torso
+    AL::ALValue axisMask   = AL::ALValue::array (63);
+
+    romeo.getProxy()->positionInterpolations(chainName, space, path, axisMask, times);
+
+  }
+  catch(const std::exception&)
+  {
+    throw vpRobotException (vpRobotException::badValue,
+                            "servo apply the motion");
+  }
+
+  return;
+
+}
+
+void DemoRomeoDoor::moveRArmToRestPosition ()
+{
+
+  try
+  {
+
+    AL::ALValue pos1 = AL::ALValue::array(0.37073051929473877, -0.32853859663009644, 0.153438001871109, 1.3140619993209839, -0.228091761469841, 0.3736579716205597);
+    AL::ALValue pos2 = AL::ALValue::array(0.2739490866661072, -0.3648371994495392, -0.20864969491958618, 1.6371514797210693, 0.5508617162704468, 0.19728609919548035);
+    AL::ALValue pos3 = AL::ALValue::array(0.08025781065225601, -0.20469778776168823, -0.32411444187164307, 1.9427353143692017, 1.112269639968872, 0.6806193590164185);
 
     AL::ALValue time1 = 1.5f;
     AL::ALValue time2 = 3.0f;

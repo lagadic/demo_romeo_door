@@ -6,7 +6,7 @@
 
 int main( int argc, char** argv )
 {
-  ros::init( argc, argv, "demo_romeo_robot_door" );
+  ros::init( argc, argv, "demo_romeo_door" );
 
   ros::NodeHandle n(std::string("~"));
 
@@ -16,7 +16,7 @@ int main( int argc, char** argv )
 
   delete node;
 
-  return 1;
+  return 0;
 }
 
 

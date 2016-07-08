@@ -22,6 +22,8 @@ typedef enum {
   OpenDoor2,
   GraspingDoorHandle,
   RotatingHandle,
+  ReleaseDoorHandle,
+  GoBacktoResPosition,
   WaitDoorOpening,
 } State_t;
 
@@ -37,6 +39,7 @@ public:
   void getStatusHandCB(const std_msgs::Int8ConstPtr &status);
   void getStatusPBVSCB(const std_msgs::BoolConstPtr &status);
   void moveRArmFromRestPosition ();
+  void moveRArmToRestPosition ();
 
 protected:
 
