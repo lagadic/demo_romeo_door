@@ -12,6 +12,9 @@
 
 #include <vpCartesianDisplacement.h>
 
+#include <visp/vpDisplayX.h>
+#include <visp3/core/vpDisplay.h>
+
 typedef enum {
   HeadToZero,
   WaitHeadToZero,
@@ -21,10 +24,14 @@ typedef enum {
   OpenDoor1,
   OpenDoor2,
   GraspingDoorHandle,
+  PutTheHandCloser,
+  GraspingDoorHandle2,
+  PutTheHandCloser2,
+  GraspingDoorHandle3,
   RotatingHandle,
   ReleaseDoorHandle,
   GoBacktoResPosition,
-  WaitDoorOpening,
+  DoorOpenedAndQuit,
 } State_t;
 
 
@@ -40,6 +47,7 @@ public:
   void getStatusPBVSCB(const std_msgs::BoolConstPtr &status);
   void moveRArmFromRestPosition ();
   void moveRArmToRestPosition ();
+  void initDisplay();
 
 protected:
 
@@ -67,6 +75,12 @@ protected:
   unsigned int status_hand;
   unsigned int pbvs_finished;
   std_msgs::Int8 pbvs_active;
+
+  bool next_step;
+
+  vpDisplay* disp;
+  vpImage<unsigned char> img_;
+  vpMouseButton::vpMouseButtonType button;
 
 
 };
