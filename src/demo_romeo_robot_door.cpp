@@ -10,6 +10,9 @@
 
 #include "demo_romeo_robot_door.h"
 
+#include <vpRomeoTkConfig.h>
+
+
 #include <std_msgs/Int8.h>
 
 
@@ -22,13 +25,23 @@ DemoRomeoDoor::DemoRomeoDoor(ros::NodeHandle &nh)
   n.param<std::string>("Ip", ip, "198.18.0.1");
   n.param<std::string>("StatusDoorHandleTopicName", statusDoorHandleTopicName, "/door_handle_detection/status");
   n.param<std::string>("StatusHandTopicName", statusHandTopicName, "/visp_blobs_tracker/status");
-  n.param<std::string>("StatusFinishedTopicName", pbvsFinishedTopicName, "/pbvs_arm_servo/pbvs_computed");
+  n.param<std::string>("actualPoseTopicName", actualPoseTopicName, "/visp_blobs_tracker/object_position");
+  n.param<std::string>("desiredPoseTopicName", desiredPoseTopicName, "/visp_blobs_tracker/object_des_position");
+  n.param<std::string>("cameraRGBTopicName", cameraRGBTopicName, "/SR300/rgb/camera_info");
+  n.param<std::string>("cmdVelTopicName", cmdVelTopicName, "joint_state");
+  n.param<std::string>("armToControl", opt_arm, "right");
+  n.param<std::string>("offsetFileName", offsetFileName, "/udd/bheintz/data_romeo/pose.xml");
+  n.param<std::string>("offsetInitialName", offsetInitialName, "HandleOffset");
+  n.param<std::string>("offsetFinalName", offsetFinalName, "FinalOffset");
+  n.param("savePose", savePose, false);
   n.param("Port", port, 9559);
 
-  pbvs_active.data = 0;
   pbvs_finished = 0;
+  pose_handle_fixed = false;
+  servo_time_init = 0;
+  init = false;
 
-  img_.init(240,320);
+  img_.init(480,640);
   img_ = 0;
   initDisplay();
 
@@ -36,12 +49,66 @@ DemoRomeoDoor::DemoRomeoDoor(ros::NodeHandle &nh)
 //  romeo = new vpNaoqiRobot;
   romeo.setRobotIp(ip);
   romeo.open();
+
+  // Initialize subscriber and publisher
+  desiredPoseSub = n.subscribe( desiredPoseTopicName, 1, (boost::function < void(const geometry_msgs::PoseStampedConstPtr&)>) boost::bind( &DemoRomeoDoor::getDesiredPoseCb, this, _1 ));
+  actualPoseSub = n.subscribe( actualPoseTopicName, 1, (boost::function < void(const geometry_msgs::PoseStampedConstPtr &)>) boost::bind( &DemoRomeoDoor::getActualPoseCb, this, _1 ));
   state_door_handle_sub = n.subscribe( statusDoorHandleTopicName, 1, (boost::function < void(const std_msgs::Int8ConstPtr&)>) boost::bind( &DemoRomeoDoor::getStatusDoorHandleCB, this, _1 ));
   state_hand_sub = n.subscribe( statusHandTopicName, 1, (boost::function < void(const std_msgs::Int8ConstPtr&)>) boost::bind( &DemoRomeoDoor::getStatusHandCB, this, _1 ));
-  pbvs_finished_sub = n.subscribe( pbvsFinishedTopicName, 1, (boost::function < void(const std_msgs::BoolConstPtr&)>) boost::bind( &DemoRomeoDoor::getStatusPBVSCB, this, _1 ));
-  pbvs_active_pub = n.advertise< std_msgs::Int8 >("pbvs_active", 1);
+  cam_rgb_info_sub = n.subscribe( cameraRGBTopicName, 1, (boost::function < void(const sensor_msgs::CameraInfo::ConstPtr&)>) boost::bind( &DemoRomeoDoor::setupCameraParameters, this, _1 ));
+
+  cmdVelPub = n.advertise<sensor_msgs::JointState >(cmdVelTopicName, 10);
 
   state = HeadToZero;
+
+  if (opt_arm == "right")
+    chain_name = "RArm";
+  else
+    chain_name = "LArm";
+
+  std::string filename_transform = std::string(ROMEOTK_DATA_FOLDER) + "/transformation.xml";
+  std::string name_transform = "qrcode_M_e_" + chain_name;
+  vpXmlParserHomogeneousMatrix pm; // Create a XML parser
+
+  if (pm.parse(oMe_Arm, filename_transform, name_transform) != vpXmlParserHomogeneousMatrix::SEQUENCE_OK) {
+    std::cout << "Cannot found the homogeneous matrix named " << name_transform << "." << std::endl;
+    ros::shutdown();
+  }
+  else
+    std::cout << "Homogeneous matrix " << name_transform <<": " << std::endl << oMe_Arm << std::endl;
+
+  ROS_INFO("Launch NaoqiRobotros node");
+  jointNames_arm =  romeo.getBodyNames(chain_name);
+  jointNames_arm.pop_back(); // Delete last joints LHand, that we don't consider in the servo
+
+  numJoints = jointNames_arm.size();
+  q.resize(numJoints);
+  q_dot.resize(numJoints);
+  q2_dot.resize(numJoints);
+  q_dot_msg.velocity.resize(numJoints);
+  q_dot_msg.name = jointNames_arm;
+  jointMin.resize(numJoints);
+  jointMax.resize(numJoints);
+
+  if( pm.parse(dhMoffsetInitial, offsetFileName, offsetInitialName) != vpXmlParserHomogeneousMatrix::SEQUENCE_OK) {
+    std::cout << "Cannot found the homogeneous matrix named " << offsetInitialName << "." << std::endl;
+    ros::shutdown();
+  }
+  else
+    std::cout << "Homogeneous matrix " << offsetInitialName <<": " << std::endl << dhMoffsetInitial << std::endl;
+
+  if( pm.parse(dhMoffsetFinal, offsetFileName, offsetFinalName) != vpXmlParserHomogeneousMatrix::SEQUENCE_OK) {
+    std::cout << "Cannot found the homogeneous matrix named " << offsetFinalName << "." << std::endl;
+    ros::shutdown();
+  }
+  else
+    std::cout << "Homogeneous matrix " << offsetFinalName <<": " << std::endl << dhMoffsetFinal << std::endl;
+
+  //Get joint limits
+  romeo.getJointMinAndMax(jointNames_arm, jointMin, jointMax);
+
+  //Set the stiffness
+  romeo.setStiffness(jointNames_arm, 1.f);
 }
 
 DemoRomeoDoor::~DemoRomeoDoor(){
@@ -101,19 +168,38 @@ void DemoRomeoDoor::spin()
 
     if(button == vpMouseButton::button3)
     {
-        //Stop the pbvs node
-        pbvs_active.data = 2;
-        pbvs_active_pub.publish(pbvs_active);
         ros::shutdown();
-
     }
+    if(button == vpMouseButton::button2)
+    {
+      //Keep the door handle pose fixed
+      pose_door_handle_fixed = cMdh;
+      pose_handle_fixed = true;
+    }
+
+    if ( pose_handle_fixed && status_door_handle)
+      vpDisplay::displayFrame(img_, pose_door_handle_fixed, cam_, 0.1, vpColor::none, 2);
+    else if ( (state == VisualServoRHand || state == WaitRHandServoed) && status_door_handle)
+    {
+      vpDisplay::displayFrame(img_, cMdh * dhMoffsetInitial, cam_, 0.1, vpColor::none, 2);
+      vpDisplay::displayFrame(img_, cMdh, cam_, 0.1, vpColor::green);
+    }
+    else if ( (state == SecondPBVS || state == WaitRHandServoedSecond) && status_door_handle)
+    {
+      vpDisplay::displayFrame(img_, pose_door_handle_fixed * dhMoffsetFinal, cam_, 0.1, vpColor::none, 2);
+      vpDisplay::displayFrame(img_, pose_door_handle_fixed, cam_, 0.1, vpColor::green);
+    }
+    else if (status_door_handle)
+      vpDisplay::displayFrame(img_, cMdh, cam_, 0.1, vpColor::none, 2);
+    if (status_hand)
+      vpDisplay::displayFrame(img_, cMh, cam_, 0.1, vpColor::none, 2);
 
     if (state == HeadToZero)
     {
       //OpenLoop Control to see the door handle
       head_pose = 0;
       head_pose[0] = vpMath::rad(-24.3); // NeckYaw
-      head_pose[1] = vpMath::rad(20.2); // NeckPitch
+      head_pose[1] = vpMath::rad(16.2); // NeckPitch
       head_pose[2] = vpMath::rad(-7.6); // HeadPitch
       head_pose[3] = vpMath::rad(0.0); // HeadRoll
       romeo.setPosition(jointNamesHead, head_pose, 0.06);
@@ -129,8 +215,19 @@ void DemoRomeoDoor::spin()
       vpDisplay::displayText(img_, vpImagePoint(15,10), "Head should go in zero position", vpColor::red);
       if (error < vpMath::rad(4) && status_door_handle)
       {
+        if (savePose)
+        {
+          vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to save the offset between the hand and the handle", vpColor::red);
+          vpDisplay::displayText(img_, vpImagePoint(30,10), "Middle click to keep the actual pose of the handle", vpColor::red);
+          if (click_done && button == vpMouseButton::button1 && once == 0)
+          {
+            state = SaveOffset;
+            click_done = false;
+          }
+        }
+        else
           state = MoveRightArm;
-          ROS_INFO("Head is in zero position");
+        ROS_INFO("Head is in zero position");
       }
 //      else
 //        std::cout << "error = " << error << "  status door handle : " << status_door_handle << std::endl;
@@ -161,10 +258,10 @@ void DemoRomeoDoor::spin()
       if (status_hand && status_door_handle)
       {
         //Start the pbvs node
-        pbvs_active.data = 1;
-        pbvs_active_pub.publish(pbvs_active);
+        start_pbvs = true;
+        computeControlLaw(dhMoffsetInitial);
+        pbvs_finished = false;
         state = WaitRHandServoed;
-//        next_step = false;
 //        ROS_INFO("Right Arm should be servoed to the door handle with an offset");
 
       }
@@ -177,23 +274,79 @@ void DemoRomeoDoor::spin()
     }
     if (state == WaitRHandServoed)
     {
-      pbvs_active.data = 1;
-      pbvs_active_pub.publish(pbvs_active);
       if (pbvs_finished)
       {
         //Stop the pbvs node
-        pbvs_active.data = 2;
-        pbvs_active_pub.publish(pbvs_active);
+        start_pbvs = false;
         vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to put the hand on the door handle", vpColor::red);
         if (click_done && button == vpMouseButton::button1 ) {
           state = PutHandOnDoorHandle1;
           click_done = false;
+          once = 0;
         }
-        ROS_INFO("Right Arm should have finished to be servoed");
-        vpTime::sleepMs(100);
+        if (!once)
+        {
+          ROS_INFO("Right Arm should have finished to be servoed");
+          once = 1;
+        }
+
+//        vpTime::sleepMs(100);
       }
       else
+      {
+        start_pbvs = true;
+        computeControlLaw(dhMoffsetInitial);
         vpDisplay::displayText(img_, vpImagePoint(15,10), "The servoing is not finished", vpColor::red);
+
+      }
+
+
+    }
+    if (state == SecondPBVS )
+    {
+      if (status_hand && pose_handle_fixed)
+      {
+        //Start the pbvs node
+        start_pbvs = true;
+        computeControlLaw(dhMoffsetFinal);
+        pbvs_finished = false;
+        state = WaitRHandServoedSecond;
+
+      }
+      else {
+        vpDisplay::displayText(img_, vpImagePoint(15,10), "The servoing cannot be done as Romeo cannot", vpColor::red);
+        vpDisplay::displayText(img_, vpImagePoint(30,10), "see his hand or the door handle is not fixed", vpColor::red);
+      }
+
+
+    }
+    if (state == WaitRHandServoedSecond)
+    {
+      if (pbvs_finished)
+      {
+        //Stop the pbvs node
+        start_pbvs = false;
+        vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to graps the door handle", vpColor::red);
+        if (click_done && button == vpMouseButton::button1 ) {
+          state = GraspingDoorHandle;
+          click_done = false;
+          once = 0;
+        }
+        if (!once)
+        {
+          ROS_INFO("Right Arm should have finished to be servoed");
+          once = 1;
+        }
+
+//        vpTime::sleepMs(100);
+      }
+      else
+      {
+        start_pbvs = true;
+        computeControlLaw(dhMoffsetFinal);
+        vpDisplay::displayText(img_, vpImagePoint(15,10), "The servoing is not finished", vpColor::red);
+
+      }
 
 
     }
@@ -220,58 +373,37 @@ void DemoRomeoDoor::spin()
         if (click_done && button == vpMouseButton::button1 ) {
           state = PutHandOnDoorHandle2;
           click_done = false;
+          once = 0;
         }
-        ROS_INFO("Right Arm should have finished to open the door");
+        if (!once)
+        {
+          ROS_INFO("Right Arm should have finished to open the door");
+          once = 1;
+        }
       }
 
     }
     if (state == PutHandOnDoorHandle2)
     {
-//      if (!once)
-//      {
-//        // Open loop upward motion of the hand
-//        vpColVector cart_delta_pos(6, 0);
-//        //      cart_delta_pos[0] = 0.04;
-//        //      cart_delta_pos[1] = 0.065;
-//        //      cart_delta_pos[2] = +0.015;
-//        double delta_t = 3;
+        //Open loop upward motion of the hand
+        vpColVector cart_delta_pos(6, 0);
+//        cart_delta_pos[0] = 0.04;
+//        cart_delta_pos[0] = 0.02;
+        cart_delta_pos[5] = vpMath::rad(-5);
+        cart_delta_pos[1] = 0.095;
+        cart_delta_pos[2] = -0.025;
+        double delta_t = 3;
 
 
-//        static vpCartesianDisplacement moveCartesian;
-//        vpVelocityTwistMatrix V;
-//        if (moveCartesian.computeVelocity(romeo, cart_delta_pos, delta_t, "RArm", V)) {
-//          romeo.setVelocity(moveCartesian.getJointNames(), moveCartesian.getJointVelocity());
-//          //        ROS_INFO("Right Arm should go in openLoop to open the door");
-//        }
-//        else
-//        {
-//          romeo.stop(moveCartesian.getJointNames());
-//          vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to grasp the door handle", vpColor::red);
-//          once = 1;
-//          ROS_INFO("Right Arm should have put the hand on the door handle");
-//        }
-//      }
-//      else if (once == 1) {
-
-        // Second open loop upward motion of the hand
-        vpColVector cart_delta_pos2(6, 0);
-//        cart_delta_pos2[0] = 0.04;
-//        cart_delta_pos2[0] = 0.02;
-        cart_delta_pos2[5] = vpMath::rad(-5);
-        cart_delta_pos2[1] = 0.11;
-        cart_delta_pos2[2] = -0.025;
-        double delta_t2 = 3;
-
-
-        static vpCartesianDisplacement moveCartesian2;
-        vpVelocityTwistMatrix V2;
-        if (moveCartesian2.computeVelocity(romeo, cart_delta_pos2, delta_t2, "RArm", V2)) {
-          romeo.setVelocity(moveCartesian2.getJointNames(), moveCartesian2.getJointVelocity());
+        static vpCartesianDisplacement moveCartesian;
+        vpVelocityTwistMatrix V;
+        if (moveCartesian.computeVelocity(romeo, cart_delta_pos, delta_t, "RArm", V)) {
+          romeo.setVelocity(moveCartesian.getJointNames(), moveCartesian.getJointVelocity());
           //        ROS_INFO("Right Arm should go in openLoop to open the door");
         }
         else
         {
-          romeo.stop(moveCartesian2.getJointNames());
+          romeo.stop(moveCartesian.getJointNames());
           vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to grasp the door handle", vpColor::red);
           if (click_done && button == vpMouseButton::button1 ) {
             state = GraspingDoorHandle;
@@ -280,7 +412,6 @@ void DemoRomeoDoor::spin()
           }
           ROS_INFO("Right Arm should have put the hand on the door handle");
         }
-//      }
 
     }
     if (state == GraspingDoorHandle)
@@ -288,13 +419,13 @@ void DemoRomeoDoor::spin()
       romeo.getProxy()->setStiffnesses("RHand", 1.0f);
       AL::ALValue angle = 0.50;
       romeo.getProxy()->setAngles("RHand", angle, 0.30);
-      vpTime::sleepMs(2000);
+      vpTime::sleepMs(100);
       state = PutTheHandCloser;
       ROS_INFO("Right Arm should have grasped the handle");
     }
     if (state == PutTheHandCloser)
     {
-      // Open loop upward motion of the hand
+      // Open loop motion of the hand to put the hand of Romeo nearer to the door
       vpColVector cart_delta_pos(6, 0);
       cart_delta_pos[0] = 0.02;
       double delta_t = 3;
@@ -318,7 +449,7 @@ void DemoRomeoDoor::spin()
       romeo.getProxy()->setStiffnesses("RHand", 1.0f);
       AL::ALValue angle = 0.30;
       romeo.getProxy()->setAngles("RHand", angle, 0.30);
-      vpTime::sleepMs(2000);
+      vpTime::sleepMs(100);
       state = PutTheHandCloser2;
       ROS_INFO("Right Arm should have grasped the handle");
     }
@@ -348,7 +479,7 @@ void DemoRomeoDoor::spin()
     {
       if (!once) {
         romeo.getProxy()->setStiffnesses("RHand", 1.0f);
-        AL::ALValue angle = 0.15;
+        AL::ALValue angle = 0.00;
         romeo.getProxy()->setAngles("RHand", angle, 0.30);
         vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to rotate the door handle", vpColor::red);
         vpTime::sleepMs(1000);
@@ -391,7 +522,7 @@ void DemoRomeoDoor::spin()
          romeo.setVelocity(jointNames, q);
       }*/
 
-      // Open loop upward motion of the hand
+      // Open loop motion of the hand to rotate the handle
       vpColVector cart_delta_pos(6, 0);
       cart_delta_pos[3] = vpMath::rad(+40);
       cart_delta_pos[2] = -0.07;
@@ -418,10 +549,10 @@ void DemoRomeoDoor::spin()
     }
     if (state == OpenDoor)
     {
-      // Open loop upward motion of the hand
+      // Open loop motion of the hand to open the door
       vpColVector cart_delta_pos(6, 0);
       cart_delta_pos[0] = -0.10;
-      cart_delta_pos[1] = -0.03;
+//      cart_delta_pos[1] = -0.03;
       double delta_t = 3;
 
 
@@ -472,8 +603,8 @@ void DemoRomeoDoor::spin()
     if (state == ReleaseDoorHandle)
     {
       romeo.getProxy()->setStiffnesses("RHand", 1.0f);
-      AL::ALValue angle = 0.25;
-      romeo.getProxy()->setAngles("RHand", angle, 0.15);
+      AL::ALValue angle = 0.5;
+      romeo.getProxy()->setAngles("RHand", angle, 0.1);
 //      vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to go away from the handle", vpColor::red);
 //      if (click_done && button == vpMouseButton::button1 ) {
         state = GoBacktoResPosition;
@@ -532,7 +663,6 @@ void DemoRomeoDoor::spin()
     {
       state_door_handle_sub.shutdown();
       state_hand_sub.shutdown();
-      pbvs_finished_sub.shutdown();
       vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to quit the demo", vpColor::red);
       if (click_done && button == vpMouseButton::button1 ) {
         break;
@@ -540,29 +670,18 @@ void DemoRomeoDoor::spin()
       }
 
     }
+    if (state == SaveOffset)
+    {
+      saveOffset();
+    }
 
     ros::spinOnce();
     loop_rate.sleep();
-    vpDisplay::displayText(img_, vpImagePoint(220,10), "Right click to exit the demo", vpColor::green);
+    vpDisplay::displayText(img_, vpImagePoint(460,10), "Right click to exit the demo", vpColor::green);
     vpDisplay::flush(img_);
   }
   ROS_INFO("End of spin");
 //  ros::shutdown();
-}
-
-void DemoRomeoDoor::getStatusDoorHandleCB(const std_msgs::Int8ConstPtr &status_dh)
-{
-  status_door_handle = status_dh->data;
-}
-
-void DemoRomeoDoor::getStatusHandCB(const std_msgs::Int8ConstPtr &status)
-{
-  status_hand = status->data;
-}
-
-void DemoRomeoDoor::getStatusPBVSCB(const std_msgs::BoolConstPtr &status)
-{
-  pbvs_finished = status->data;
 }
 
 void DemoRomeoDoor::moveRArmFromRestPosition ()
@@ -625,9 +744,9 @@ void DemoRomeoDoor::moveRArmToRestPosition ()
   try
   {
 
-    AL::ALValue pos1 = AL::ALValue::array(0.36160808801651, -0.14481818675994873, -0.012668244540691376, 0.9340378642082214, -0.3044275641441345, 0.25746822357177734);
-    AL::ALValue pos2 = AL::ALValue::array(0.3901706337928772, -0.26107993721961975, -0.012815611436963081, 0.9594348669052124, 0.11563336104154587, 0.38348156213760376);
-    AL::ALValue pos3 = AL::ALValue::array(0.2876889705657959, -0.27668479084968567, -0.22870546579360962, 0.8602628111839294, 0.8492440581321716, 0.10930496454238892);
+    AL::ALValue pos1 = AL::ALValue::array(0.3924088776111603, -0.18414883315563202, 0.053752146661281586, 1.065794825553894, -0.030273856595158577, 0.6450750827789307);
+    AL::ALValue pos2 = AL::ALValue::array(0.3896014392375946, -0.2007695585489273, 0.08273855596780777, 1.154071569442749, -0.3156268894672394, 0.21828164160251617);
+    AL::ALValue pos3 = AL::ALValue::array(0.2911868691444397, -0.3036026656627655, -0.19023677706718445, 0.7319300770759583, 0.8177691698074341, -0.13333836197853088);
     AL::ALValue pos4 = AL::ALValue::array(0.117273710668087, -0.22325754165649414, -0.3122972846031189, 1.6027156114578247, 1.20582115650177, 0.5312549471855164);
 
     AL::ALValue time1 = 2.0f;
@@ -680,3 +799,188 @@ void DemoRomeoDoor::initDisplay()
 
     return;
 }
+
+void DemoRomeoDoor::computeControlLaw(const vpHomogeneousMatrix &doorhandleMoffset)
+{
+    vpHomogeneousMatrix currentFeature;
+    vpHomogeneousMatrix cMhandle_des;
+    vpRotationMatrix cRh;
+    vpTranslationVector cTh;
+    geometry_msgs::Pose cMh_msg;
+    tf::Transform transformdh;
+    static tf::TransformBroadcaster br;
+
+//    std::cout << cMh_isInitialized << "  " << cMdh_isInitialized  << "  " <<  statusPoseHand << "  " <<  statusPoseDesired << "  " << start_pbvs << std::endl;
+    if ( status_hand && status_door_handle && start_pbvs == 1)
+    {
+        static bool first_time = true;
+        if (first_time) {
+            std::cout << "-- Start visual servoing of the arm" << std::endl;
+            servo_time_init = vpTime::measureTimeSecond();
+            first_time = false;
+        }
+        vpAdaptiveGain lambda(1, 0.05, 8);
+        servo_arm.setLambda(lambda);
+        servo_arm.set_eJe(romeo.get_eJe(chain_name));
+        currentFeature = doorhandleMoffset.inverse() * cMdh.inverse() * cMh;
+        cMhandle_des = cMdh * doorhandleMoffset;
+
+        ////Publish the TF BEGIN////
+        transformdh.setOrigin( tf::Vector3(cMhandle_des[0][3], cMhandle_des[1][3], cMhandle_des[2][3] ));
+        cTh = cMhandle_des.getTranslationVector();
+        cRh = cMhandle_des.getRotationMatrix();
+//        intern_cMh = vpHomogeneousMatrix(cTh, cRh);
+        cMh_msg = visp_bridge::toGeometryMsgsPose(vpHomogeneousMatrix(cTh, cRh));
+
+        tf::Quaternion qdh;
+        qdh.setX(cMh_msg.orientation.x);
+        qdh.setY(cMh_msg.orientation.y);
+        qdh.setZ(cMh_msg.orientation.z);
+        qdh.setW(cMh_msg.orientation.w);
+
+        transformdh.setRotation(qdh);
+        br.sendTransform(tf::StampedTransform(transformdh, ros::Time::now(), "SR300_rgb_optical_frame", "desired_pose_tf"));
+        ////Publish the TF END////
+        servo_arm.setCurrentFeature(currentFeature) ;
+        // Create twist matrix from target Frame to Arm end-effector (WristPitch)
+        vpVelocityTwistMatrix oVe_LArm(oMe_Arm);
+        servo_arm.m_task.set_cVe(oVe_LArm);
+
+        //Compute velocities PBVS task
+        q_dot = - servo_arm.computeControlLaw(vpTime::measureTimeSecond() - servo_time_init);
+
+        q = romeo.getPosition(jointNames_arm);
+        q2_dot  = servo_arm.m_task.secondaryTaskJointLimitAvoidance(q, q_dot, jointMin, jointMax);
+
+//        vpDisplay::displayFrame(img_, cMh, )
+        publishCmdVel(q_dot + q2_dot);
+
+        vpTranslationVector t_error_grasp = currentFeature.getTranslationVector();
+        vpRotationMatrix R_error_grasp;
+        currentFeature.extract(R_error_grasp);
+        vpThetaUVector tu_error_grasp;
+        tu_error_grasp.buildFrom(R_error_grasp);
+        double theta_error_grasp;
+        vpColVector u_error_grasp;
+        tu_error_grasp.extract(theta_error_grasp, u_error_grasp);
+        double error_t_treshold = 0.001;
+
+        init = false;
+
+        if ( (sqrt(t_error_grasp.sumSquare()) < error_t_treshold) && (theta_error_grasp < vpMath::rad(3)) )
+        {
+          pbvs_finished = true;
+          vpColVector q_dot_zero(numJoints,0);
+          publishCmdVel(q_dot_zero);
+        }
+        std::cout << "We are servoing the arm " << start_pbvs << std::endl;
+    }
+    else if (!init && start_pbvs == 0)
+    {
+      init = true;
+      vpColVector q_dot_zero(numJoints,0);
+      publishCmdVel(q_dot_zero);
+      std::cout << "publishing just once" << std::endl;
+    }
+    else if ( start_pbvs == 1 &&( status_hand == 0 || status_door_handle == 0) )
+    {
+      vpColVector q_dot_zero(numJoints,0);
+      publishCmdVel(q_dot_zero);
+    }
+
+}
+
+void DemoRomeoDoor::publishCmdVel(const vpColVector &q)
+{
+    for (int i = 0; i < q.size(); i++)
+    {
+        q_dot_msg.velocity[i] = q[i];
+    }
+
+    cmdVelPub.publish(q_dot_msg);
+
+}
+
+
+void DemoRomeoDoor::getDesiredPoseCb(const geometry_msgs::PoseStamped::ConstPtr &desiredPose)
+{
+    cMdh = visp_bridge::toVispHomogeneousMatrix(desiredPose->pose);
+
+
+//    if ( !cMdh_isInitialized )
+//    {
+//        ROS_INFO("DesiredPose received");
+//        cMdh_isInitialized = true;
+//    }
+
+}
+
+
+void DemoRomeoDoor::getActualPoseCb(const geometry_msgs::PoseStamped::ConstPtr &actualPose)
+{
+    cMh = visp_bridge::toVispHomogeneousMatrix(actualPose->pose);
+//    if ( !cMh_isInitialized )
+//    {
+//        ROS_INFO("ActualPose received");
+//        cMh_isInitialized = true;
+//    }
+}
+
+void DemoRomeoDoor::getStatusDoorHandleCB(const std_msgs::Int8ConstPtr &status_dh)
+{
+  status_door_handle = status_dh->data;
+}
+
+void DemoRomeoDoor::getStatusHandCB(const std_msgs::Int8ConstPtr &status)
+{
+  status_hand = status->data;
+}
+
+void DemoRomeoDoor::saveOffset()
+{
+    vpHomogeneousMatrix dhMoffset;
+    if (pose_handle_fixed)
+      dhMoffset = pose_door_handle_fixed.inverse() * cMh;
+    else
+      dhMoffset = cMdh.inverse() * cMh;
+    vpXmlParserHomogeneousMatrix xml;
+
+    if ( pose_handle_fixed )
+    {
+      if ( status_hand && status_door_handle )
+      {
+        ROS_INFO_STREAM("cMdh = " << cMdh << "\n cMh = " << cMh << "\n dhMh = " << dhMoffset);
+        if( xml.save(dhMoffset, offsetFileName.c_str(), offsetFinalName) == vpXmlParserHomogeneousMatrix::SEQUENCE_OK )
+          std::cout << "Pose between the hand and the object successfully saved in \"" << offsetFileName << "\"" << std::endl;
+        else {
+          std::cout << "Failed to save the pose in \"" << offsetFileName << "\"" << std::endl;
+          std::cout << "A file with the same name exists. Remove it to be able to save the parameters..." << std::endl;
+        }
+        ros::shutdown();
+      }
+    }
+    else
+    {
+      if ( status_hand && status_door_handle )
+      {
+        ROS_INFO_STREAM("cMdh = " << cMdh << "\n cMh = " << cMh << "\n dhMh = " << dhMoffset);
+        if( xml.save(dhMoffset, offsetFileName.c_str(), offsetInitialName) == vpXmlParserHomogeneousMatrix::SEQUENCE_OK )
+          std::cout << "Pose between the hand and the object successfully saved in \"" << offsetFileName << "\"" << std::endl;
+        else {
+          std::cout << "Failed to save the pose in \"" << offsetFileName << "\"" << std::endl;
+          std::cout << "A file with the same name exists. Remove it to be able to save the parameters..." << std::endl;
+        }
+        ros::shutdown();
+      }
+    }
+}
+
+void DemoRomeoDoor::setupCameraParameters(const sensor_msgs::CameraInfoConstPtr &cam_rgb)
+{
+  //init m_camera parameters
+  cam_ = visp_bridge::toVispCameraParameters(*cam_rgb);
+  ROS_INFO_STREAM("Camera param  = \n" << cam_rgb);
+
+  cam_rgb_info_sub.shutdown();
+}
+
