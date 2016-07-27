@@ -114,7 +114,7 @@ DemoRomeoDoor::DemoRomeoDoor(ros::NodeHandle &nh)
 DemoRomeoDoor::~DemoRomeoDoor(){
 
 //  if (romeo){
-//    romeo.stop(jointNames_tot_hroll);
+//    romeo.stop(jointNames_tot);
 //    delete romeo;
 //    romeo = NULL;
 //  }
@@ -170,12 +170,6 @@ void DemoRomeoDoor::spin()
     {
         ros::shutdown();
     }
-    if(button == vpMouseButton::button2)
-    {
-      //Keep the door handle pose fixed
-      pose_door_handle_fixed = cMdh;
-      pose_handle_fixed = true;
-    }
 
     if ( pose_handle_fixed && status_door_handle)
       vpDisplay::displayFrame(img_, pose_door_handle_fixed, cam_, 0.1, vpColor::none, 2);
@@ -223,6 +217,12 @@ void DemoRomeoDoor::spin()
           {
             state = SaveOffset;
             click_done = false;
+          }
+          if(button == vpMouseButton::button2)
+          {
+            //Keep the door handle pose fixed
+            pose_door_handle_fixed = cMdh;
+            pose_handle_fixed = true;
           }
         }
         else
@@ -290,7 +290,6 @@ void DemoRomeoDoor::spin()
           once = 1;
         }
 
-//        vpTime::sleepMs(100);
       }
       else
       {
@@ -338,7 +337,6 @@ void DemoRomeoDoor::spin()
           once = 1;
         }
 
-//        vpTime::sleepMs(100);
       }
       else
       {
@@ -355,8 +353,8 @@ void DemoRomeoDoor::spin()
       // Open loop upward motion of the hand
       vpColVector cart_delta_pos(6, 0);
 //      cart_delta_pos[1] = 0.02;
-      cart_delta_pos[3] = vpMath::rad(-5);
-      double delta_t = 3;
+      cart_delta_pos[3] = vpMath::rad(-7);
+      double delta_t = 1;
 
 
       static vpCartesianDisplacement moveCartesian;
@@ -369,12 +367,12 @@ void DemoRomeoDoor::spin()
       else
       {
         romeo.stop(moveCartesian.getJointNames());
-        vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to do next step", vpColor::red);
-        if (click_done && button == vpMouseButton::button1 ) {
+//        vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to do next step", vpColor::red);
+//        if (click_done && button == vpMouseButton::button1 ) {
           state = PutHandOnDoorHandle2;
-          click_done = false;
+//          click_done = false;
           once = 0;
-        }
+//        }
         if (!once)
         {
           ROS_INFO("Right Arm should have finished to open the door");
@@ -385,12 +383,15 @@ void DemoRomeoDoor::spin()
     }
     if (state == PutHandOnDoorHandle2)
     {
+        romeo.getProxy()->setStiffnesses("RHand", 1.0f);
+        AL::ALValue angle = 0.70;
+        romeo.getProxy()->setAngles("RHand", angle, 0.50);
+        vpTime::sleepMs(100);
+
         //Open loop upward motion of the hand
         vpColVector cart_delta_pos(6, 0);
-//        cart_delta_pos[0] = 0.04;
-//        cart_delta_pos[0] = 0.02;
         cart_delta_pos[5] = vpMath::rad(-5);
-        cart_delta_pos[1] = 0.095;
+        cart_delta_pos[1] = 0.10;
         cart_delta_pos[2] = -0.025;
         double delta_t = 3;
 
@@ -417,7 +418,7 @@ void DemoRomeoDoor::spin()
     if (state == GraspingDoorHandle)
     {
       romeo.getProxy()->setStiffnesses("RHand", 1.0f);
-      AL::ALValue angle = 0.50;
+      AL::ALValue angle = 0.30;
       romeo.getProxy()->setAngles("RHand", angle, 0.30);
       vpTime::sleepMs(100);
       state = PutTheHandCloser;
@@ -428,7 +429,7 @@ void DemoRomeoDoor::spin()
       // Open loop motion of the hand to put the hand of Romeo nearer to the door
       vpColVector cart_delta_pos(6, 0);
       cart_delta_pos[0] = 0.02;
-      double delta_t = 3;
+      double delta_t = 2;
 
 
       static vpCartesianDisplacement moveCartesian;
@@ -447,7 +448,7 @@ void DemoRomeoDoor::spin()
     if (state == GraspingDoorHandle2)
     {
       romeo.getProxy()->setStiffnesses("RHand", 1.0f);
-      AL::ALValue angle = 0.30;
+      AL::ALValue angle = 0.15;
       romeo.getProxy()->setAngles("RHand", angle, 0.30);
       vpTime::sleepMs(100);
       state = PutTheHandCloser2;
@@ -457,9 +458,9 @@ void DemoRomeoDoor::spin()
     {
       // Open loop upward motion of the hand
       vpColVector cart_delta_pos(6, 0);
-      cart_delta_pos[0] = 0.02;
+      cart_delta_pos[0] = 0.01;
       cart_delta_pos[1] = 0.01;
-      double delta_t = 3;
+      double delta_t = 2;
 
 
       static vpCartesianDisplacement moveCartesian;
@@ -552,7 +553,8 @@ void DemoRomeoDoor::spin()
       // Open loop motion of the hand to open the door
       vpColVector cart_delta_pos(6, 0);
       cart_delta_pos[0] = -0.10;
-//      cart_delta_pos[1] = -0.03;
+      cart_delta_pos[4] = vpMath::rad(+15);
+//      cart_delta_pos[2] = 0.01;
       double delta_t = 3;
 
 
@@ -566,8 +568,13 @@ void DemoRomeoDoor::spin()
       {
         romeo.stop(moveCartesian.getJointNames());
         vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to close the door", vpColor::red);
+        vpDisplay::displayText(img_, vpImagePoint(30,10), "Middle kick to release the door", vpColor::red);
         if (click_done && button == vpMouseButton::button1 ) {
           state = CloseDoor;
+          click_done = false;
+        }
+        if (click_done && button == vpMouseButton::button2 ) {
+          state = ReleaseDoorHandle;
           click_done = false;
         }
         ROS_INFO("Right Arm should have finished to open the door");
@@ -605,6 +612,8 @@ void DemoRomeoDoor::spin()
       romeo.getProxy()->setStiffnesses("RHand", 1.0f);
       AL::ALValue angle = 0.5;
       romeo.getProxy()->setAngles("RHand", angle, 0.1);
+      moveRArmToRestPosition();
+
 //      vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to go away from the handle", vpColor::red);
 //      if (click_done && button == vpMouseButton::button1 ) {
         state = GoBacktoResPosition;
@@ -639,21 +648,20 @@ void DemoRomeoDoor::spin()
     {
 //      ROS_INFO("Right Arm should go in zero position");
       if (once == 0)
-        vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to put back the RArm in rest position", vpColor::red);
-      else
         vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to open the fingers", vpColor::red);
+      else
+        vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to put back the RArm in rest position", vpColor::red);
 
+//      if (click_done && button == vpMouseButton::button1 && once == 0) {
+//        once = 1;
+//        click_done = false;
+//      }
       if (click_done && button == vpMouseButton::button1 && once == 0) {
-        moveRArmToRestPosition();
-        once = 1;
-        click_done = false;
-      }
-      if (click_done && button == vpMouseButton::button1 && once == 1) {
         romeo.getProxy()->setStiffnesses("RHand", 1.0f);
         AL::ALValue angle = 1.0;
         romeo.getProxy()->setAngles("RHand", angle, 1.);
         state = DoorOpenedAndQuit;
-        once = 0;
+//        once = 0;
         click_done = false;
       }
 
@@ -744,15 +752,21 @@ void DemoRomeoDoor::moveRArmToRestPosition ()
   try
   {
 
-    AL::ALValue pos1 = AL::ALValue::array(0.3924088776111603, -0.18414883315563202, 0.053752146661281586, 1.065794825553894, -0.030273856595158577, 0.6450750827789307);
-    AL::ALValue pos2 = AL::ALValue::array(0.3896014392375946, -0.2007695585489273, 0.08273855596780777, 1.154071569442749, -0.3156268894672394, 0.21828164160251617);
-    AL::ALValue pos3 = AL::ALValue::array(0.2911868691444397, -0.3036026656627655, -0.19023677706718445, 0.7319300770759583, 0.8177691698074341, -0.13333836197853088);
-    AL::ALValue pos4 = AL::ALValue::array(0.117273710668087, -0.22325754165649414, -0.3122972846031189, 1.6027156114578247, 1.20582115650177, 0.5312549471855164);
+    AL::ALValue pos1 = AL::ALValue::array(0.3373715579509735, -0.23838065564632416, 0.0157206729054451, 1.4386650323867798, -0.1224169209599495, 0.8254975080490112);
+    AL::ALValue pos2 = AL::ALValue::array(0.2764400839805603, -0.3419274687767029, -0.1975732147693634, 1.102345585823059, 1.1167892217636108, 0.14908771216869354);
+//    AL::ALValue pos3 = AL::ALValue::array(0.2911868691444397, -0.3036026656627655, -0.19023677706718445, 0.7319300770759583, 0.8177691698074341, -0.13333836197853088);
+    AL::ALValue pos3 = AL::ALValue::array(0.117273710668087, -0.22325754165649414, -0.3122972846031189, 1.6027156114578247, 1.20582115650177, 0.5312549471855164);
+
+// Pose to move back from a closed door
+//    AL::ALValue pos1 = AL::ALValue::array(0.3924088776111603, -0.18414883315563202, 0.053752146661281586, 1.065794825553894, -0.030273856595158577, 0.6450750827789307);
+//    AL::ALValue pos2 = AL::ALValue::array(0.3896014392375946, -0.2007695585489273, 0.08273855596780777, 1.154071569442749, -0.3156268894672394, 0.21828164160251617);
+//    AL::ALValue pos3 = AL::ALValue::array(0.2911868691444397, -0.3036026656627655, -0.19023677706718445, 0.7319300770759583, 0.8177691698074341, -0.13333836197853088);
+//    AL::ALValue pos4 = AL::ALValue::array(0.117273710668087, -0.22325754165649414, -0.3122972846031189, 1.6027156114578247, 1.20582115650177, 0.5312549471855164);
 
     AL::ALValue time1 = 2.0f;
     AL::ALValue time2 = 4.0f;
     AL::ALValue time3 = 6.0f;
-    AL::ALValue time4 = 8.0f;
+//    AL::ALValue time4 = 8.0f;
 
 
 
@@ -760,14 +774,14 @@ void DemoRomeoDoor::moveRArmToRestPosition ()
     path.arrayPush(pos1);
     path.arrayPush(pos2);
     path.arrayPush(pos3);
-    path.arrayPush(pos4);
+//    path.arrayPush(pos4);
 
 
     AL::ALValue times;
     times.arrayPush(time1);
     times.arrayPush(time2);
     times.arrayPush(time3);
-    times.arrayPush(time4);
+//    times.arrayPush(time4);
 
     AL::ALValue chainName  = AL::ALValue::array ("RArm");
     AL::ALValue space      = AL::ALValue::array (0); // Torso
@@ -819,7 +833,7 @@ void DemoRomeoDoor::computeControlLaw(const vpHomogeneousMatrix &doorhandleMoffs
             servo_time_init = vpTime::measureTimeSecond();
             first_time = false;
         }
-        vpAdaptiveGain lambda(1, 0.05, 8);
+        vpAdaptiveGain lambda(1.5, 0.12, 8);
         servo_arm.setLambda(lambda);
         servo_arm.set_eJe(romeo.get_eJe(chain_name));
         currentFeature = doorhandleMoffset.inverse() * cMdh.inverse() * cMh;
@@ -904,26 +918,13 @@ void DemoRomeoDoor::publishCmdVel(const vpColVector &q)
 
 void DemoRomeoDoor::getDesiredPoseCb(const geometry_msgs::PoseStamped::ConstPtr &desiredPose)
 {
-    cMdh = visp_bridge::toVispHomogeneousMatrix(desiredPose->pose);
-
-
-//    if ( !cMdh_isInitialized )
-//    {
-//        ROS_INFO("DesiredPose received");
-//        cMdh_isInitialized = true;
-//    }
-
+  cMdh = visp_bridge::toVispHomogeneousMatrix(desiredPose->pose);
 }
 
 
 void DemoRomeoDoor::getActualPoseCb(const geometry_msgs::PoseStamped::ConstPtr &actualPose)
 {
-    cMh = visp_bridge::toVispHomogeneousMatrix(actualPose->pose);
-//    if ( !cMh_isInitialized )
-//    {
-//        ROS_INFO("ActualPose received");
-//        cMh_isInitialized = true;
-//    }
+  cMh = visp_bridge::toVispHomogeneousMatrix(actualPose->pose);
 }
 
 void DemoRomeoDoor::getStatusDoorHandleCB(const std_msgs::Int8ConstPtr &status_dh)
