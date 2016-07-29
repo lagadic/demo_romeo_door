@@ -37,7 +37,7 @@ DemoRomeoDoor::DemoRomeoDoor(ros::NodeHandle &nh)
   n.param("Port", port, 9559);
 
   pbvs_finished = 0;
-  pose_handle_fixed = false;
+  pose_door_handle_is_fixed = false;
   servo_time_init = 0;
   init = false;
 
@@ -99,7 +99,7 @@ DemoRomeoDoor::DemoRomeoDoor(ros::NodeHandle &nh)
 
   if( pm.parse(dhMoffsetFinal, offsetFileName, offsetFinalName) != vpXmlParserHomogeneousMatrix::SEQUENCE_OK) {
     std::cout << "Cannot found the homogeneous matrix named " << offsetFinalName << "." << std::endl;
-    ros::shutdown();
+//    ros::shutdown();
   }
   else
     std::cout << "Homogeneous matrix " << offsetFinalName <<": " << std::endl << dhMoffsetFinal << std::endl;
@@ -118,7 +118,8 @@ DemoRomeoDoor::~DemoRomeoDoor(){
 //    delete romeo;
 //    romeo = NULL;
 //  }
-  delete disp;
+  if (disp !=0)
+    delete disp;
   romeo.stop(jointNames_tot);
   ROS_INFO("DemoRomeoDoor normally destroyed !");
 }
@@ -168,11 +169,11 @@ void DemoRomeoDoor::spin()
 
     if(button == vpMouseButton::button3)
     {
-        ros::shutdown();
+        break;
     }
 
-    if ( pose_handle_fixed && status_door_handle)
-      vpDisplay::displayFrame(img_, pose_door_handle_fixed, cam_, 0.1, vpColor::none, 2);
+    if ( pose_door_handle_is_fixed && status_door_handle)
+      vpDisplay::displayFrame(img_, cMdh_fixed, cam_, 0.1, vpColor::none, 2);
     else if ( (state == VisualServoRHand || state == WaitRHandServoed) && status_door_handle)
     {
       vpDisplay::displayFrame(img_, cMdh * dhMoffsetInitial, cam_, 0.1, vpColor::none, 2);
@@ -180,8 +181,8 @@ void DemoRomeoDoor::spin()
     }
     else if ( (state == SecondPBVS || state == WaitRHandServoedSecond) && status_door_handle)
     {
-      vpDisplay::displayFrame(img_, pose_door_handle_fixed * dhMoffsetFinal, cam_, 0.1, vpColor::none, 2);
-      vpDisplay::displayFrame(img_, pose_door_handle_fixed, cam_, 0.1, vpColor::green);
+      vpDisplay::displayFrame(img_, cMdh_fixed * dhMoffsetFinal, cam_, 0.1, vpColor::none, 2);
+      vpDisplay::displayFrame(img_, cMdh_fixed, cam_, 0.1, vpColor::green);
     }
     else if (status_door_handle)
       vpDisplay::displayFrame(img_, cMdh, cam_, 0.1, vpColor::none, 2);
@@ -221,8 +222,8 @@ void DemoRomeoDoor::spin()
           if(button == vpMouseButton::button2)
           {
             //Keep the door handle pose fixed
-            pose_door_handle_fixed = cMdh;
-            pose_handle_fixed = true;
+            cMdh_fixed = cMdh;
+            pose_door_handle_is_fixed = true;
           }
         }
         else
@@ -241,7 +242,6 @@ void DemoRomeoDoor::spin()
         vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to servo the RArm near the door handle", vpColor::red);
 
       if (click_done && button == vpMouseButton::button1 && once == 0) {
-//        state = GoBacktoResPosition;
         moveRArmFromRestPosition(); // move up
         once = 1;
         click_done = false;
@@ -278,18 +278,20 @@ void DemoRomeoDoor::spin()
       {
         //Stop the pbvs node
         start_pbvs = false;
-        vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to put the hand on the door handle", vpColor::red);
+        vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to put the hand on the door handle with open loop", vpColor::red);
+        vpDisplay::displayText(img_, vpImagePoint(30,10), "Middle click to stop the pose of the handle and put the hand on the door handle with a second pbvs", vpColor::red);
         if (click_done && button == vpMouseButton::button1 ) {
           state = PutHandOnDoorHandle1;
           click_done = false;
           once = 0;
         }
-        if (!once)
-        {
-          ROS_INFO("Right Arm should have finished to be servoed");
-          once = 1;
+        if (click_done && button == vpMouseButton::button2 ) {
+          click_done = false;
+          //Keep the door handle pose fixed
+          cMdh_fixed = cMdh;
+          pose_door_handle_is_fixed = true;
+          state = WaitRHandServoed;  //Should be state = SecondPBVS;
         }
-
       }
       else
       {
@@ -303,7 +305,7 @@ void DemoRomeoDoor::spin()
     }
     if (state == SecondPBVS )
     {
-      if (status_hand && pose_handle_fixed)
+      if (status_hand && pose_door_handle_is_fixed)
       {
         //Start the pbvs node
         start_pbvs = true;
@@ -557,6 +559,7 @@ void DemoRomeoDoor::spin()
 //      cart_delta_pos[2] = 0.01;
       double delta_t = 3;
 
+      door_closed = false;
 
       static vpCartesianDisplacement moveCartesian;
       vpVelocityTwistMatrix V;
@@ -588,6 +591,7 @@ void DemoRomeoDoor::spin()
       cart_delta_pos[1] = 0.03;
       double delta_t = 3;
 
+      door_closed = true;
 
       static vpCartesianDisplacement moveCartesian;
       vpVelocityTwistMatrix V;
@@ -620,29 +624,6 @@ void DemoRomeoDoor::spin()
 //        click_done = false;
 //      }
       ROS_INFO("Right Arm should have released the handle");
-    }
-    if (state == GetAwayFromHandle)
-    {
-      std::vector<float> RArmElbowWrist_pos;
-      std::vector<std::string> RArmElbowWrist_name;
-      RArmElbowWrist_name.push_back("RElbowYaw");
-      RArmElbowWrist_name.push_back("RWristPitch");
-
-      RArmElbowWrist_pos = romeo.getProxy()->getAngles(RArmElbowWrist_name, true);
-
-      RArmElbowWrist_pos[0] -= vpMath::rad(+11.);
-      RArmElbowWrist_pos[1] -= vpMath::rad(+5.);
-
-      romeo.getProxy()->setAngles(RArmElbowWrist_name, RArmElbowWrist_pos, 0.02);
-
-      once = 0;
-
-//      vpDisplay::displayText(img_, vpImagePoint(15,10), "Left click to quit the demo", vpColor::red);
-//      if (click_done && button == vpMouseButton::button1 ) {
-        state = GoBacktoResPosition;
-//        click_done = false;
-//      }
-      ROS_INFO("Right Arm should have finished to open the door");
     }
     if (state == GoBacktoResPosition)
     {
@@ -751,37 +732,51 @@ void DemoRomeoDoor::moveRArmToRestPosition ()
 
   try
   {
-
-    AL::ALValue pos1 = AL::ALValue::array(0.3373715579509735, -0.23838065564632416, 0.0157206729054451, 1.4386650323867798, -0.1224169209599495, 0.8254975080490112);
-    AL::ALValue pos2 = AL::ALValue::array(0.2764400839805603, -0.3419274687767029, -0.1975732147693634, 1.102345585823059, 1.1167892217636108, 0.14908771216869354);
-//    AL::ALValue pos3 = AL::ALValue::array(0.2911868691444397, -0.3036026656627655, -0.19023677706718445, 0.7319300770759583, 0.8177691698074341, -0.13333836197853088);
-    AL::ALValue pos3 = AL::ALValue::array(0.117273710668087, -0.22325754165649414, -0.3122972846031189, 1.6027156114578247, 1.20582115650177, 0.5312549471855164);
-
-// Pose to move back from a closed door
-//    AL::ALValue pos1 = AL::ALValue::array(0.3924088776111603, -0.18414883315563202, 0.053752146661281586, 1.065794825553894, -0.030273856595158577, 0.6450750827789307);
-//    AL::ALValue pos2 = AL::ALValue::array(0.3896014392375946, -0.2007695585489273, 0.08273855596780777, 1.154071569442749, -0.3156268894672394, 0.21828164160251617);
-//    AL::ALValue pos3 = AL::ALValue::array(0.2911868691444397, -0.3036026656627655, -0.19023677706718445, 0.7319300770759583, 0.8177691698074341, -0.13333836197853088);
-//    AL::ALValue pos4 = AL::ALValue::array(0.117273710668087, -0.22325754165649414, -0.3122972846031189, 1.6027156114578247, 1.20582115650177, 0.5312549471855164);
-
-    AL::ALValue time1 = 2.0f;
-    AL::ALValue time2 = 4.0f;
-    AL::ALValue time3 = 6.0f;
-//    AL::ALValue time4 = 8.0f;
-
-
-
     AL::ALValue path;
-    path.arrayPush(pos1);
-    path.arrayPush(pos2);
-    path.arrayPush(pos3);
-//    path.arrayPush(pos4);
-
-
     AL::ALValue times;
-    times.arrayPush(time1);
-    times.arrayPush(time2);
-    times.arrayPush(time3);
-//    times.arrayPush(time4);
+
+    if (!door_closed)
+    {
+      //Pose to move back from a opened door
+      AL::ALValue pos1 = AL::ALValue::array(0.3373715579509735, -0.23838065564632416, 0.0157206729054451, 1.4386650323867798, -0.1224169209599495, 0.8254975080490112);
+      AL::ALValue pos2 = AL::ALValue::array(0.2764400839805603, -0.3419274687767029, -0.1975732147693634, 1.102345585823059, 1.1167892217636108, 0.14908771216869354);
+      AL::ALValue pos3 = AL::ALValue::array(0.117273710668087, -0.22325754165649414, -0.3122972846031189, 1.6027156114578247, 1.20582115650177, 0.5312549471855164);
+
+      AL::ALValue time1 = 2.0f;
+      AL::ALValue time2 = 4.0f;
+      AL::ALValue time3 = 6.0f;
+
+      path.arrayPush(pos1);
+      path.arrayPush(pos2);
+      path.arrayPush(pos3);
+
+      times.arrayPush(time1);
+      times.arrayPush(time2);
+      times.arrayPush(time3);
+    }
+    else
+    {
+      // Pose to move back from a closed door
+      AL::ALValue pos1 = AL::ALValue::array(0.3924088776111603, -0.18414883315563202, 0.053752146661281586, 1.065794825553894, -0.030273856595158577, 0.6450750827789307);
+      AL::ALValue pos2 = AL::ALValue::array(0.3896014392375946, -0.2007695585489273, 0.08273855596780777, 1.154071569442749, -0.3156268894672394, 0.21828164160251617);
+      AL::ALValue pos3 = AL::ALValue::array(0.2911868691444397, -0.3036026656627655, -0.19023677706718445, 0.7319300770759583, 0.8177691698074341, -0.13333836197853088);
+      AL::ALValue pos4 = AL::ALValue::array(0.117273710668087, -0.22325754165649414, -0.3122972846031189, 1.6027156114578247, 1.20582115650177, 0.5312549471855164);
+
+      AL::ALValue time1 = 2.0f;
+      AL::ALValue time2 = 4.0f;
+      AL::ALValue time3 = 6.0f;
+      AL::ALValue time4 = 8.0f;
+
+      path.arrayPush(pos1);
+      path.arrayPush(pos2);
+      path.arrayPush(pos3);
+      path.arrayPush(pos4);
+
+      times.arrayPush(time1);
+      times.arrayPush(time2);
+      times.arrayPush(time3);
+      times.arrayPush(time4);
+    }
 
     AL::ALValue chainName  = AL::ALValue::array ("RArm");
     AL::ALValue space      = AL::ALValue::array (0); // Torso
@@ -940,13 +935,13 @@ void DemoRomeoDoor::getStatusHandCB(const std_msgs::Int8ConstPtr &status)
 void DemoRomeoDoor::saveOffset()
 {
     vpHomogeneousMatrix dhMoffset;
-    if (pose_handle_fixed)
-      dhMoffset = pose_door_handle_fixed.inverse() * cMh;
+    if (pose_door_handle_is_fixed)
+      dhMoffset = cMdh_fixed.inverse() * cMh;
     else
       dhMoffset = cMdh.inverse() * cMh;
     vpXmlParserHomogeneousMatrix xml;
 
-    if ( pose_handle_fixed )
+    if ( pose_door_handle_is_fixed )
     {
       if ( status_hand && status_door_handle )
       {

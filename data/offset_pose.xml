@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<root>
+  <!--This file stores homogeneous matrix used
+   in the vpHomogeneousMatrix Class of ViSP available
+   at http://www.irisa.fr/lagadic/visp/visp.html .
+   It can be read with the parse method of
+   the vpXmlParserHomogeneousMatrix class.-->
+  <!--Homogeneous Matrix-->
+  <homogeneous_transformation>
+    <!--Name of the homogeneous matrix-->
+    <name>HandleOffset</name>
+    <values>
+      <!--Translation vector with values in meters-->
+      <tx>0.126281</tx>
+      <ty>0.036313</ty>
+      <tz>0.104144</tz>
+      <!--Rotational vector expressed in angle axis representation with values in radians-->
+      <theta_ux>0.032892</theta_ux>
+      <theta_uy>1.903289</theta_uy>
+      <theta_uz>0.217682</theta_uz>
+    </values>
+  </homogeneous_transformation>
+</root>

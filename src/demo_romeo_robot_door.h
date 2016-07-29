@@ -103,36 +103,40 @@ protected:
 
   //State
   State_t  state;
+  bool door_closed;
 
-  unsigned int status_door_handle;
-  unsigned int status_hand;
-  unsigned int pbvs_finished;
-
+  //Image and Display
   vpDisplay* disp;
   vpImage<unsigned char> img_;
-  vpMouseButton::vpMouseButtonType button;
 
+  vpMouseButton::vpMouseButtonType button;
   //Servo Arm
   vpServoArm servo_arm;
   vpColVector q;
   vpColVector q_dot;
   vpColVector q2_dot;
   sensor_msgs::JointState q_dot_msg;
-
   double servo_time_init;
 
+  //Pose
   vpHomogeneousMatrix cMh;
   vpHomogeneousMatrix cMdh;
   vpHomogeneousMatrix oMe_Arm;
   vpHomogeneousMatrix dhMoffsetInitial;
   vpHomogeneousMatrix dhMoffsetFinal;
-  vpHomogeneousMatrix pose_door_handle_fixed;
+  vpHomogeneousMatrix cMdh_fixed;
+
+  //Camera Parameter
   vpCameraParameters cam_;
 
+  //Parameters
   bool init;
   bool start_pbvs;
-  bool pose_handle_fixed;
+  bool pose_door_handle_is_fixed;
   bool savePose;
+  unsigned int status_door_handle;
+  unsigned int status_hand;
+  unsigned int pbvs_finished;
 
 
 };
